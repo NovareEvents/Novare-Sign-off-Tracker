@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import Papa from "papaparse";
-import { storage, localPref } from "./lib/db";
+import { storage, localPref, auth } from "./lib/db";
 import {
   Check,
   Clock,
@@ -146,6 +146,24 @@ export default function App() {
   const [tab, setTab] = useState("dashboard");
   const [eventVenueMap, setEventVenueMap] = useState({});
   const [calendarEvents, setCalendarEvents] = useState([]);
+  const [adminUser, setAdminUser] = useState(null);
+
+  // ---- admin auth ----
+  useEffect(() => {
+    auth.getSession().then((user) => {
+      if (user) setAdminUser(user);
+    });
+    const subscription = auth.onAuthStateChange((user) => {
+      setAdminUser(user);
+      if (!user && role === "admin") {
+        // Session ended (logged out, or expired) — fall back to trainee view.
+        setRole("trainee");
+        setTab("dashboard");
+      }
+    });
+    return () => subscription?.unsubscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ---- load ----
   useEffect(() => {
@@ -575,7 +593,25 @@ export default function App() {
 
           <RoleSwitch
             role={role}
+            adminUser={adminUser}
+            onAdminLogin={async (email, password) => {
+              const user = await auth.signIn(email, password);
+              setAdminUser(user);
+              setRole("admin");
+              setTab("dashboard");
+            }}
+            onAdminLogout={async () => {
+              await auth.signOut();
+              setAdminUser(null);
+              setRole("trainee");
+              setTab("dashboard");
+            }}
             setRole={(r) => {
+              // Switching to admin without already being logged in isn't
+              // allowed here — RoleSwitch only calls this for admin when
+              // adminUser is already set (post-login), or when going back
+              // to trainee, which is always fine.
+              if (r === "admin" && !adminUser) return;
               setRole(r);
               setTab("dashboard");
               rememberMe(r, activeTraineeId);
@@ -741,10 +777,16 @@ function Stat({ label, value, accent }) {
   );
 }
 
-function RoleSwitch({ role, setRole, trainees, activeTraineeId, setActiveTraineeId }) {
+function RoleSwitch({ role, adminUser, onAdminLogin, onAdminLogout, setRole, trainees, activeTraineeId, setActiveTraineeId }) {
   const [pendingId, setPendingId] = useState("");
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
+
+  const [showLogin, setShowLogin] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loggingIn, setLoggingIn] = useState(false);
 
   const activeTrainee = trainees.find((t) => t.id === activeTraineeId);
 
@@ -752,7 +794,6 @@ function RoleSwitch({ role, setRole, trainees, activeTraineeId, setActiveTrainee
     const candidate = trainees.find((t) => t.id === pendingId);
     if (!candidate) return;
     if (!candidate.pin) {
-      // No PIN set on this trainee record — admin hasn't configured one yet.
       setActiveTraineeId(pendingId);
       setPendingId("");
       setPin("");
@@ -776,22 +817,57 @@ function RoleSwitch({ role, setRole, trainees, activeTraineeId, setActiveTrainee
     setError("");
   };
 
+  const handleAdminClick = () => {
+    if (adminUser) {
+      setRole("admin");
+    } else {
+      setShowLogin(true);
+    }
+  };
+
+  const submitLogin = async () => {
+    setLoginError("");
+    setLoggingIn(true);
+    try {
+      await onAdminLogin(email, password);
+      setShowLogin(false);
+      setEmail("");
+      setPassword("");
+    } catch (e) {
+      setLoginError("Login failed — check your email and password.");
+    } finally {
+      setLoggingIn(false);
+    }
+  };
+
   return (
     <div className="flex flex-col items-end gap-2">
       <div className="flex items-center gap-2 flex-wrap">
         <div className="flex rounded-md overflow-hidden text-sm" style={{ border: `1px solid ${C.border}` }}>
-          {["trainee", "admin"].map((r) => (
-            <button
-              key={r}
-              onClick={() => setRole(r)}
-              className="px-3 py-1.5 flex items-center gap-1.5"
-              style={{ background: role === r ? C.gold : "transparent", color: role === r ? "#1B140A" : C.textMuted, fontWeight: 600 }}
-            >
-              {r === "admin" ? <ShieldCheck size={14} /> : <User size={14} />}
-              {r === "admin" ? "Admin" : "Trainee"}
-            </button>
-          ))}
+          <button
+            onClick={() => { setRole("trainee"); setShowLogin(false); }}
+            className="px-3 py-1.5 flex items-center gap-1.5"
+            style={{ background: role === "trainee" ? C.gold : "transparent", color: role === "trainee" ? "#1B140A" : C.textMuted, fontWeight: 600 }}
+          >
+            <User size={14} /> Trainee
+          </button>
+          <button
+            onClick={handleAdminClick}
+            className="px-3 py-1.5 flex items-center gap-1.5"
+            style={{ background: role === "admin" ? C.gold : "transparent", color: role === "admin" ? "#1B140A" : C.textMuted, fontWeight: 600 }}
+          >
+            <ShieldCheck size={14} /> Admin
+          </button>
         </div>
+
+        {role === "admin" && adminUser && (
+          <div className="flex items-center gap-2 text-sm">
+            <span style={{ color: C.text }}>{adminUser.email}</span>
+            <button onClick={onAdminLogout} className="text-xs px-2 py-1 rounded" style={{ color: C.textMuted, border: `1px solid ${C.border}` }}>
+              Log out
+            </button>
+          </div>
+        )}
 
         {role === "trainee" && activeTrainee && (
           <div className="flex items-center gap-2 text-sm">
@@ -802,7 +878,7 @@ function RoleSwitch({ role, setRole, trainees, activeTraineeId, setActiveTrainee
           </div>
         )}
 
-        {role === "trainee" && !activeTrainee && (
+        {role === "trainee" && !activeTrainee && !showLogin && (
           <select
             value={pendingId}
             onChange={(e) => { setPendingId(e.target.value); setPin(""); setError(""); }}
@@ -817,7 +893,7 @@ function RoleSwitch({ role, setRole, trainees, activeTraineeId, setActiveTrainee
         )}
       </div>
 
-      {role === "trainee" && !activeTrainee && pendingId && (
+      {role === "trainee" && !activeTrainee && pendingId && !showLogin && (
         <div className="flex items-center gap-2">
           <input
             type="password"
@@ -836,6 +912,42 @@ function RoleSwitch({ role, setRole, trainees, activeTraineeId, setActiveTrainee
         </div>
       )}
       {error && <div className="text-xs" style={{ color: C.brick }}>{error}</div>}
+
+      {showLogin && (
+        <div className="flex flex-col gap-2 items-end">
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Admin email"
+            className="text-sm rounded-md px-2.5 py-1.5"
+            style={{ background: C.surfaceAlt, color: C.text, border: `1px solid ${C.border}`, width: 220 }}
+          />
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && submitLogin()}
+            placeholder="Password"
+            className="text-sm rounded-md px-2.5 py-1.5"
+            style={{ background: C.surfaceAlt, color: C.text, border: `1px solid ${loginError ? C.brick : C.border}`, width: 220 }}
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={submitLogin}
+              disabled={loggingIn || !email || !password}
+              className="text-sm px-3 py-1.5 rounded-md font-semibold"
+              style={{ background: loggingIn ? C.border : C.gold, color: loggingIn ? C.textFaint : "#1B140A" }}
+            >
+              {loggingIn ? "Signing in…" : "Log in"}
+            </button>
+            <button onClick={() => { setShowLogin(false); setLoginError(""); }} className="text-sm px-3 py-1.5 rounded-md" style={{ color: C.textMuted, border: `1px solid ${C.border}` }}>
+              Cancel
+            </button>
+          </div>
+          {loginError && <div className="text-xs" style={{ color: C.brick }}>{loginError}</div>}
+        </div>
+      )}
     </div>
   );
 }

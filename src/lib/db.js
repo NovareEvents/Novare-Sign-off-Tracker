@@ -39,6 +39,31 @@ export const storage = {
   },
 };
 
+// Real authentication for the Admin role, using Supabase's built-in auth.
+// Admin accounts are created once in the Supabase dashboard (Authentication
+// -> Users -> Add user) — there's no public sign-up flow in this app, so
+// only people you've explicitly added can ever log in as admin.
+export const auth = {
+  async signIn(email, password) {
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw error;
+    return data.user;
+  },
+  async signOut() {
+    await supabase.auth.signOut();
+  },
+  async getSession() {
+    const { data } = await supabase.auth.getSession();
+    return data.session?.user || null;
+  },
+  onAuthStateChange(callback) {
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      callback(session?.user || null);
+    });
+    return data.subscription;
+  },
+};
+
 // Personal, per-device preference (which trainee this browser last signed in
 // as). This never needs to be shared between people, so it just uses the
 // browser's real localStorage instead of the database.
