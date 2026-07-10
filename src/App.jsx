@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import Papa from "papaparse";
-import { storage, localPref, auth } from "./lib/db";
+import { storage, auth } from "./lib/db";
 import {
   Check,
   Clock,
@@ -146,24 +146,96 @@ export default function App() {
   const [tab, setTab] = useState("dashboard");
   const [eventVenueMap, setEventVenueMap] = useState({});
   const [calendarEvents, setCalendarEvents] = useState([]);
-  const [adminUser, setAdminUser] = useState(null);
 
-  // ---- admin auth ----
+  // authUser is the raw Supabase Auth user, regardless of role — everyone
+  // (admin and trainee) now logs in through the same system. adminUser is
+  // only set once we've confirmed this authUser's role is admin.
+  const [authUser, setAuthUser] = useState(null);
+  const [adminUser, setAdminUser] = useState(null);
+  const [authResolving, setAuthResolving] = useState(true);
+  const [loginError, setLoginError] = useState("");
+
+  // ---- auth: check for an existing session on load, and stay in sync ----
   useEffect(() => {
     auth.getSession().then((user) => {
-      if (user) setAdminUser(user);
+      setAuthUser(user);
+      setAuthResolving(false);
     });
     const subscription = auth.onAuthStateChange((user) => {
-      setAdminUser(user);
-      if (!user && role === "admin") {
-        // Session ended (logged out, or expired) — fall back to trainee view.
-        setRole("trainee");
-        setTab("dashboard");
-      }
+      setAuthUser(user);
     });
     return () => subscription?.unsubscribe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ---- resolve authUser -> either admin, or a matching trainee record ----
+  useEffect(() => {
+    if (!authUser) {
+      setAdminUser(null);
+      setActiveTraineeId("");
+      setRole("trainee");
+      return;
+    }
+    if (authUser.user_metadata?.role === "admin") {
+      setAdminUser(authUser);
+      setRole("admin");
+      setTab("dashboard");
+      setLoginError("");
+      return;
+    }
+    // Not tagged as admin — look for a trainee record with a matching email.
+    // Trainees may still be loading on first run; this effect re-runs once
+    // the roster finishes loading, since `trainees` is a dependency below.
+    if (trainees.length === 0 && loading) return;
+    const match = trainees.find(
+      (t) => (t.email || "").trim().toLowerCase() === (authUser.email || "").trim().toLowerCase()
+    );
+    if (match) {
+      setAdminUser(null);
+      setActiveTraineeId(match.id);
+      setRole("trainee");
+      setTab("dashboard");
+      setLoginError("");
+    } else {
+      setLoginError("This login isn't linked to an admin or trainee account. Contact your administrator.");
+      auth.signOut();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authUser, trainees, loading]);
+
+  const handleLogin = async (email, password) => {
+    setLoginError("");
+    await auth.signIn(email, password);
+    // authUser gets set via the onAuthStateChange subscription above.
+  };
+
+  // Self-signup — only ever results in Trainee access, never Admin, since
+  // admin status can only be tagged from the Supabase dashboard directly.
+  // The real gate is still the roster email match, enforced at login
+  // resolution above — this pre-check just gives a clearer error message
+  // than letting someone sign up and then silently fail to ever get in.
+  const handleSignUp = async (email, password) => {
+    const onRoster = trainees.some((t) => (t.email || "").trim().toLowerCase() === email.trim().toLowerCase());
+    if (!onRoster) {
+      throw new Error(
+        "This email isn't on the training roster yet. Ask your admin to add you in Roster first, then come back and sign up."
+      );
+    }
+    const { session } = await auth.signUp(email, password);
+    if (!session) {
+      throw new Error("CONFIRM_EMAIL");
+    }
+    // If session came back immediately, authUser gets set via the
+    // onAuthStateChange subscription, same as a normal login.
+  };
+
+  const handleLogout = async () => {
+    await auth.signOut();
+    setAuthUser(null);
+    setAdminUser(null);
+    setActiveTraineeId("");
+    setRole("trainee");
+    setTab("dashboard");
+  };
 
   // ---- load ----
   useEffect(() => {
@@ -201,17 +273,6 @@ export default function App() {
           if (ce && ce.value) setCalendarEvents(JSON.parse(ce.value));
         } catch (e) {
           /* no calendar events yet */
-        }
-
-        try {
-          const me = await localPref.get("novare-me");
-          if (me && me.value) {
-            const parsed = JSON.parse(me.value);
-            if (parsed.role) setRole(parsed.role);
-            if (parsed.traineeId) setActiveTraineeId(parsed.traineeId);
-          }
-        } catch (e) {
-          /* no personal record yet */
         }
       } catch (err) {
         setSaveError("Couldn't load saved data. You can still use the app this session.");
@@ -256,23 +317,10 @@ export default function App() {
     }
   }, []);
 
-  const rememberMe = async (nextRole, traineeId) => {
-    try {
-      await localPref.set("novare-me", JSON.stringify({ role: nextRole, traineeId }));
-    } catch (e) {
-      /* non-critical */
-    }
-  };
-
   // ---- roster actions ----
-  const addTrainee = (name, pin) => {
-    if (!name.trim()) return;
-    const next = [...trainees, { id: uid(), name: name.trim(), pin: (pin || "").trim() }];
-    setTrainees(next);
-    persistRoster(venues, next, managers);
-  };
-  const resetTraineePin = (id, pin) => {
-    const next = trainees.map((t) => (t.id === id ? { ...t, pin: (pin || "").trim() } : t));
+  const addTrainee = (name, email) => {
+    if (!name.trim() || !email.trim()) return;
+    const next = [...trainees, { id: uid(), name: name.trim(), email: email.trim().toLowerCase() }];
     setTrainees(next);
     persistRoster(venues, next, managers);
   };
@@ -491,9 +539,9 @@ export default function App() {
       { id: uid(), name: "The Foundry at Puritan Mill" },
     ];
     const demoTrainees = [
-      { id: uid(), name: "Jordan Reyes", pin: "1234" },
-      { id: uid(), name: "Priya Nair", pin: "2345" },
-      { id: uid(), name: "Sam Whitfield", pin: "3456" },
+      { id: uid(), name: "Jordan Reyes", email: "jordan.reyes@example.com" },
+      { id: uid(), name: "Priya Nair", email: "priya.nair@example.com" },
+      { id: uid(), name: "Sam Whitfield", email: "sam.whitfield@example.com" },
     ];
     const demoManagers = [
       { id: uid(), name: "Dana Kessler", phone: "(555) 210-4471", email: "dana.kessler@novare.com" },
@@ -565,6 +613,19 @@ export default function App() {
         )
       : 0;
 
+  if (authResolving) {
+    return (
+      <div className="nv-body flex items-center justify-center min-h-[500px]" style={{ background: C.bg, color: C.textMuted }}>
+        <Loader2 className="animate-spin mr-2" size={18} />
+        Loading…
+      </div>
+    );
+  }
+
+  if (!authUser) {
+    return <LoginScreen onLogin={handleLogin} onSignUp={handleSignUp} externalError={loginError} />;
+  }
+
   if (loading) {
     return (
       <div className="nv-body flex items-center justify-center min-h-[500px]" style={{ background: C.bg, color: C.textMuted }}>
@@ -591,38 +652,11 @@ export default function App() {
             </p>
           </div>
 
-          <RoleSwitch
+          <SignedInAs
             role={role}
             adminUser={adminUser}
-            onAdminLogin={async (email, password) => {
-              const user = await auth.signIn(email, password);
-              setAdminUser(user);
-              setRole("admin");
-              setTab("dashboard");
-            }}
-            onAdminLogout={async () => {
-              await auth.signOut();
-              setAdminUser(null);
-              setRole("trainee");
-              setTab("dashboard");
-            }}
-            setRole={(r) => {
-              // Switching to admin without already being logged in isn't
-              // allowed here — RoleSwitch only calls this for admin when
-              // adminUser is already set (post-login), or when going back
-              // to trainee, which is always fine.
-              if (r === "admin" && !adminUser) return;
-              setRole(r);
-              setTab("dashboard");
-              rememberMe(r, activeTraineeId);
-            }}
-            trainees={trainees}
-            activeTraineeId={activeTraineeId}
-            setActiveTraineeId={(id) => {
-              setActiveTraineeId(id);
-              setTab("dashboard");
-              rememberMe(role, id);
-            }}
+            traineeName={activeTraineeId ? traineeName(activeTraineeId) : ""}
+            onLogout={handleLogout}
           />
         </div>
 
@@ -746,7 +780,6 @@ export default function App() {
             shiftCountForTrainee={shiftCountForTrainee}
             shiftCountForVenue={shiftCountForVenue}
             onAddTrainee={addTrainee}
-            onResetTraineePin={resetTraineePin}
             onRemoveTrainee={removeTrainee}
             onRenameVenue={renameVenue}
             onAddVenue={addVenue}
@@ -777,177 +810,178 @@ function Stat({ label, value, accent }) {
   );
 }
 
-function RoleSwitch({ role, adminUser, onAdminLogin, onAdminLogout, setRole, trainees, activeTraineeId, setActiveTraineeId }) {
-  const [pendingId, setPendingId] = useState("");
-  const [pin, setPin] = useState("");
-  const [error, setError] = useState("");
+function SignedInAs({ role, adminUser, traineeName, onLogout }) {
+  return (
+    <div className="flex items-center gap-3">
+      <div
+        className="text-sm px-3 py-1.5 rounded-md flex items-center gap-1.5"
+        style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, color: C.text }}
+      >
+        {role === "admin" ? <ShieldCheck size={14} style={{ color: C.gold }} /> : <User size={14} style={{ color: C.gold }} />}
+        {role === "admin" ? (adminUser?.email || "Admin") : (traineeName || "Trainee")}
+        <span className="text-xs" style={{ color: C.textFaint }}>· {role === "admin" ? "Admin" : "Trainee"}</span>
+      </div>
+      <button
+        onClick={onLogout}
+        className="text-xs px-2 py-1.5 rounded-md"
+        style={{ color: C.textMuted, border: `1px solid ${C.border}` }}
+      >
+        Log out
+      </button>
+    </div>
+  );
+}
 
-  const [showLogin, setShowLogin] = useState(false);
+// ---- Login screen (shown before any authentication) ----
+function LoginScreen({ onLogin, onSignUp, externalError }) {
+  const [mode, setMode] = useState("login"); // "login" | "signup"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [loginError, setLoginError] = useState("");
-  const [loggingIn, setLoggingIn] = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  const activeTrainee = trainees.find((t) => t.id === activeTraineeId);
-
-  const confirmPin = () => {
-    const candidate = trainees.find((t) => t.id === pendingId);
-    if (!candidate) return;
-    if (!candidate.pin) {
-      setActiveTraineeId(pendingId);
-      setPendingId("");
-      setPin("");
-      setError("");
-      return;
-    }
-    if (pin === candidate.pin) {
-      setActiveTraineeId(pendingId);
-      setPendingId("");
-      setPin("");
-      setError("");
-    } else {
-      setError("Incorrect PIN. Try again.");
-    }
-  };
-
-  const switchIdentity = () => {
-    setActiveTraineeId("");
-    setPendingId("");
-    setPin("");
+  const switchMode = (m) => {
+    setMode(m);
     setError("");
+    setInfo("");
   };
 
-  const handleAdminClick = () => {
-    if (adminUser) {
-      setRole("admin");
-    } else {
-      setShowLogin(true);
-    }
-  };
-
-  const submitLogin = async () => {
-    setLoginError("");
-    setLoggingIn(true);
+  const submit = async () => {
+    setError("");
+    setInfo("");
+    setBusy(true);
     try {
-      await onAdminLogin(email, password);
-      setShowLogin(false);
-      setEmail("");
-      setPassword("");
+      if (mode === "login") {
+        await onLogin(email, password);
+      } else {
+        if (password !== confirmPassword) {
+          setError("Passwords don't match.");
+          setBusy(false);
+          return;
+        }
+        if (password.length < 6) {
+          setError("Password should be at least 6 characters.");
+          setBusy(false);
+          return;
+        }
+        await onSignUp(email, password);
+        // If we get here without an error, either the session started
+        // immediately (handled by the parent), or... see catch below for
+        // the "check your email" case.
+      }
     } catch (e) {
-      setLoginError("Login failed — check your email and password.");
+      if (e.message === "CONFIRM_EMAIL") {
+        setInfo("Account created — check your email for a confirmation link, then log in.");
+        setMode("login");
+        setPassword("");
+        setConfirmPassword("");
+      } else if (mode === "signup") {
+        setError(e.message || "Couldn't create that account.");
+      } else {
+        setError("Invalid email or password.");
+      }
     } finally {
-      setLoggingIn(false);
+      setBusy(false);
     }
   };
+
+  const canSubmit = mode === "login" ? email && password : email && password && confirmPassword;
 
   return (
-    <div className="flex flex-col items-end gap-2">
-      <div className="flex items-center gap-2 flex-wrap">
-        <div className="flex rounded-md overflow-hidden text-sm" style={{ border: `1px solid ${C.border}` }}>
+    <div className="nv-body min-h-[600px] w-full flex items-center justify-center" style={{ background: C.bg, color: C.text }}>
+      {FONTS}
+      <div className="w-full max-w-sm p-8 rounded-lg" style={{ background: C.surface, border: `1px solid ${C.border}` }}>
+        <div className="nv-mono text-xs tracking-widest uppercase mb-1" style={{ color: C.gold }}>
+          Novare · Field Training
+        </div>
+        <h1 className="nv-display text-xl font-semibold mb-6">Shift Sign-Off Tracker</h1>
+
+        <div className="flex gap-1 mb-5 text-sm rounded-md overflow-hidden" style={{ border: `1px solid ${C.border}` }}>
           <button
-            onClick={() => { setRole("trainee"); setShowLogin(false); }}
-            className="px-3 py-1.5 flex items-center gap-1.5"
-            style={{ background: role === "trainee" ? C.gold : "transparent", color: role === "trainee" ? "#1B140A" : C.textMuted, fontWeight: 600 }}
+            onClick={() => switchMode("login")}
+            className="flex-1 py-1.5"
+            style={{ background: mode === "login" ? C.gold : "transparent", color: mode === "login" ? "#1B140A" : C.textMuted, fontWeight: 600 }}
           >
-            <User size={14} /> Trainee
+            Log in
           </button>
           <button
-            onClick={handleAdminClick}
-            className="px-3 py-1.5 flex items-center gap-1.5"
-            style={{ background: role === "admin" ? C.gold : "transparent", color: role === "admin" ? "#1B140A" : C.textMuted, fontWeight: 600 }}
+            onClick={() => switchMode("signup")}
+            className="flex-1 py-1.5"
+            style={{ background: mode === "signup" ? C.gold : "transparent", color: mode === "signup" ? "#1B140A" : C.textMuted, fontWeight: 600 }}
           >
-            <ShieldCheck size={14} /> Admin
+            Trainee sign up
           </button>
         </div>
 
-        {role === "admin" && adminUser && (
-          <div className="flex items-center gap-2 text-sm">
-            <span style={{ color: C.text }}>{adminUser.email}</span>
-            <button onClick={onAdminLogout} className="text-xs px-2 py-1 rounded" style={{ color: C.textMuted, border: `1px solid ${C.border}` }}>
-              Log out
-            </button>
-          </div>
-        )}
+        <div className="flex flex-col gap-3">
+          <label className="text-sm flex flex-col gap-1">
+            <span style={{ color: C.textMuted }}>Email</span>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submit()}
+              style={selectStyle}
+              autoFocus
+            />
+          </label>
+          <label className="text-sm flex flex-col gap-1">
+            <span style={{ color: C.textMuted }}>Password</span>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && (mode === "login" ? submit() : null)}
+              style={selectStyle}
+            />
+          </label>
 
-        {role === "trainee" && activeTrainee && (
-          <div className="flex items-center gap-2 text-sm">
-            <span style={{ color: C.text }}>Signed in as {activeTrainee.name}</span>
-            <button onClick={switchIdentity} className="text-xs px-2 py-1 rounded" style={{ color: C.textMuted, border: `1px solid ${C.border}` }}>
-              Not you?
-            </button>
-          </div>
-        )}
+          {mode === "signup" && (
+            <label className="text-sm flex flex-col gap-1">
+              <span style={{ color: C.textMuted }}>Confirm password</span>
+              <input
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && submit()}
+                style={selectStyle}
+              />
+            </label>
+          )}
 
-        {role === "trainee" && !activeTrainee && !showLogin && (
-          <select
-            value={pendingId}
-            onChange={(e) => { setPendingId(e.target.value); setPin(""); setError(""); }}
-            className="text-sm rounded-md px-2.5 py-1.5"
-            style={{ background: C.surfaceAlt, color: C.text, border: `1px solid ${C.border}` }}
+          <button
+            onClick={submit}
+            disabled={busy || !canSubmit}
+            className="mt-2 rounded-md py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
+            style={{
+              background: busy || !canSubmit ? C.border : C.gold,
+              color: busy || !canSubmit ? C.textFaint : "#1B140A",
+            }}
           >
-            <option value="">I am…</option>
-            {trainees.map((t) => (
-              <option key={t.id} value={t.id}>{t.name}</option>
-            ))}
-          </select>
-        )}
+            {busy ? "Working…" : mode === "login" ? "Log in" : "Create account"}
+            <ChevronRight size={16} />
+          </button>
+
+          {(error || externalError) && (
+            <div className="text-sm flex items-center gap-2" style={{ color: C.brick }}>
+              <AlertCircle size={14} /> {error || externalError}
+            </div>
+          )}
+          {info && (
+            <div className="text-sm flex items-center gap-2" style={{ color: C.green }}>
+              <Check size={14} /> {info}
+            </div>
+          )}
+
+          <div className="text-xs mt-2" style={{ color: C.textFaint }}>
+            {mode === "login"
+              ? "New trainee? Use the \"Trainee sign up\" tab above — your email needs to already be added in Roster by an admin."
+              : "Admin accounts are set up directly by an admin and can't be created here."}
+          </div>
+        </div>
       </div>
-
-      {role === "trainee" && !activeTrainee && pendingId && !showLogin && (
-        <div className="flex items-center gap-2">
-          <input
-            type="password"
-            inputMode="numeric"
-            maxLength={8}
-            value={pin}
-            onChange={(e) => setPin(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && confirmPin()}
-            placeholder="Enter your PIN"
-            className="text-sm rounded-md px-2.5 py-1.5"
-            style={{ background: C.surfaceAlt, color: C.text, border: `1px solid ${error ? C.brick : C.border}`, width: 140 }}
-          />
-          <button onClick={confirmPin} className="text-sm px-3 py-1.5 rounded-md font-semibold" style={{ background: C.gold, color: "#1B140A" }}>
-            Confirm
-          </button>
-        </div>
-      )}
-      {error && <div className="text-xs" style={{ color: C.brick }}>{error}</div>}
-
-      {showLogin && (
-        <div className="flex flex-col gap-2 items-end">
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="Admin email"
-            className="text-sm rounded-md px-2.5 py-1.5"
-            style={{ background: C.surfaceAlt, color: C.text, border: `1px solid ${C.border}`, width: 220 }}
-          />
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && submitLogin()}
-            placeholder="Password"
-            className="text-sm rounded-md px-2.5 py-1.5"
-            style={{ background: C.surfaceAlt, color: C.text, border: `1px solid ${loginError ? C.brick : C.border}`, width: 220 }}
-          />
-          <div className="flex gap-2">
-            <button
-              onClick={submitLogin}
-              disabled={loggingIn || !email || !password}
-              className="text-sm px-3 py-1.5 rounded-md font-semibold"
-              style={{ background: loggingIn ? C.border : C.gold, color: loggingIn ? C.textFaint : "#1B140A" }}
-            >
-              {loggingIn ? "Signing in…" : "Log in"}
-            </button>
-            <button onClick={() => { setShowLogin(false); setLoginError(""); }} className="text-sm px-3 py-1.5 rounded-md" style={{ color: C.textMuted, border: `1px solid ${C.border}` }}>
-              Cancel
-            </button>
-          </div>
-          {loginError && <div className="text-xs" style={{ color: C.brick }}>{loginError}</div>}
-        </div>
-      )}
     </div>
   );
 }
@@ -1499,11 +1533,9 @@ function Approvals({ pending, scheduled, traineeName, venueName, managerById, on
 }
 
 // ---- Roster manager ----
-function RosterManager({ trainees, venues, managers, totalFor, totalRequired, shiftCountForTrainee, shiftCountForVenue, onAddTrainee, onResetTraineePin, onRemoveTrainee, onRenameVenue, onAddVenue, onRestoreDefaultVenues, onRemoveVenue, onAddManager, onRemoveManager, onSeedDemo, onResetAll }) {
+function RosterManager({ trainees, venues, managers, totalFor, totalRequired, shiftCountForTrainee, shiftCountForVenue, onAddTrainee, onRemoveTrainee, onRenameVenue, onAddVenue, onRestoreDefaultVenues, onRemoveVenue, onAddManager, onRemoveManager, onSeedDemo, onResetAll }) {
   const [name, setName] = useState("");
-  const [pin, setPin] = useState("");
-  const [resettingId, setResettingId] = useState("");
-  const [newPin, setNewPin] = useState("");
+  const [traineeEmail, setTraineeEmail] = useState("");
   const [mgrName, setMgrName] = useState("");
   const [mgrPhone, setMgrPhone] = useState("");
   const [mgrEmail, setMgrEmail] = useState("");
@@ -1559,26 +1591,31 @@ function RosterManager({ trainees, venues, managers, totalFor, totalRequired, sh
           <div className="text-sm font-semibold mb-3 flex items-center gap-1.5" style={{ color: C.text }}>
             <User size={14} /> Trainees
           </div>
-          <div className="flex gap-2 mb-3">
+          <div className="flex gap-2 mb-2">
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" style={{ ...selectStyle, flex: 1 }} />
             <input
-              value={pin}
-              onChange={(e) => setPin(e.target.value)}
-              placeholder="4-digit PIN"
-              maxLength={8}
-              style={{ ...selectStyle, width: 110 }}
-              onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) { onAddTrainee(name, pin); setName(""); setPin(""); } }}
+              value={traineeEmail}
+              onChange={(e) => setTraineeEmail(e.target.value)}
+              placeholder="Email (must match their login)"
+              style={{ ...selectStyle, flex: 1 }}
+              onKeyDown={(e) => { if (e.key === "Enter" && name.trim() && traineeEmail.trim()) { onAddTrainee(name, traineeEmail); setName(""); setTraineeEmail(""); } }}
             />
-            <button onClick={() => { if (name.trim()) { onAddTrainee(name, pin); setName(""); setPin(""); } }} className="px-3 rounded-md flex items-center" style={{ background: C.gold, color: "#1B140A" }}>
+            <button onClick={() => { if (name.trim() && traineeEmail.trim()) { onAddTrainee(name, traineeEmail); setName(""); setTraineeEmail(""); } }} className="px-3 rounded-md flex items-center" style={{ background: C.gold, color: "#1B140A" }}>
               <Plus size={16} />
             </button>
+          </div>
+          <div className="text-xs mb-3" style={{ color: C.textFaint }}>
+            This email must also be created as a login in Supabase (Authentication → Users) — that's what lets them sign in.
           </div>
           <div className="flex flex-col gap-2 nv-scroll" style={{ maxHeight: 320, overflowY: "auto" }}>
             {trainees.length === 0 && <div className="text-sm" style={{ color: C.textFaint }}>No trainees added yet.</div>}
             {trainees.map((t) => (
               <div key={t.id} className="flex flex-col gap-1.5 px-3 py-2 rounded-md text-sm" style={{ background: C.surfaceAlt, border: `1px solid ${C.border}` }}>
                 <div className="flex items-center justify-between">
-                  <span>{t.name}</span>
+                  <div>
+                    <div>{t.name}</div>
+                    <div className="text-xs" style={{ color: C.textFaint }}>{t.email}</div>
+                  </div>
                   <div className="flex items-center gap-3">
                     <span className="nv-mono text-xs" style={{ color: C.textMuted }}>{totalFor(t.id)}/{totalRequired}</span>
                     <button onClick={() => handleRemoveTrainee(t.id)} style={{ color: confirmDeleteTraineeId === t.id ? C.brick : C.textFaint }}><Trash2 size={14} /></button>
@@ -1590,26 +1627,6 @@ function RosterManager({ trainees, venues, managers, totalFor, totalRequired, sh
                     <button onClick={() => setConfirmDeleteTraineeId("")} style={{ color: C.textMuted }}>Cancel</button>
                   </div>
                 )}
-                <div className="flex items-center gap-2 text-xs" style={{ color: C.textFaint }}>
-                  {t.pin ? "PIN set" : "No PIN set"}
-                  {resettingId === t.id ? (
-                    <>
-                      <input value={newPin} onChange={(e) => setNewPin(e.target.value)} placeholder="New PIN" maxLength={8} style={{ ...selectStyle, padding: "3px 8px", width: 90 }} />
-                      <button
-                        onClick={() => { onResetTraineePin(t.id, newPin); setResettingId(""); setNewPin(""); }}
-                        className="px-2 py-1 rounded"
-                        style={{ background: C.gold, color: "#1B140A", fontWeight: 600 }}
-                      >
-                        Save
-                      </button>
-                      <button onClick={() => { setResettingId(""); setNewPin(""); }} style={{ color: C.textFaint }}>Cancel</button>
-                    </>
-                  ) : (
-                    <button onClick={() => setResettingId(t.id)} className="px-2 py-0.5 rounded" style={{ border: `1px solid ${C.border}` }}>
-                      {t.pin ? "Reset PIN" : "Set PIN"}
-                    </button>
-                  )}
-                </div>
               </div>
             ))}
           </div>

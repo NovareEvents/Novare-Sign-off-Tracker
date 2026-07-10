@@ -49,6 +49,15 @@ export const auth = {
     if (error) throw error;
     return data.user;
   },
+  async signUp(email, password) {
+    const { data, error } = await supabase.auth.signUp({ email, password });
+    if (error) throw error;
+    // data.session is present if email confirmation is off in your Supabase
+    // project (Auth settings), meaning the person is logged in immediately.
+    // If confirmation is required, session is null until they click the
+    // link in their confirmation email.
+    return { user: data.user, session: data.session };
+  },
   async signOut() {
     await supabase.auth.signOut();
   },

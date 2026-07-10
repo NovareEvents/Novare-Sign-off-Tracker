@@ -14,25 +14,18 @@ create table if not exists novare_kv (
 );
 
 -- Row Level Security is on by default for new Supabase tables, which blocks
--- all access until you add a policy. Since this app doesn't have per-user
--- accounts yet (it uses the PIN-based trainee model built into the app),
--- these policies allow the app's public "anon" key to read and write freely.
---
--- IMPORTANT: this means anyone who has your site's URL and inspects the
--- page's JavaScript can find your Supabase URL and anon key and read/write
--- this table directly, bypassing the app's UI entirely. That's the same
--- trust model the app already had (the PIN system was never meant to be a
--- hard security boundary — see the app's own caveats about that). If you
--- later add real user accounts (Supabase Auth), tighten these policies to
--- check auth.uid() instead of allowing anyone.
+-- all access until you add a policy. These policies require a real,
+-- logged-in Supabase Auth session (admin or trainee — either counts) to
+-- read or write this table. Someone who isn't logged in — even if they have
+-- your site's public key — gets nothing.
 
 alter table novare_kv enable row level security;
 
-create policy "public read" on novare_kv
-  for select using (true);
+create policy "authenticated read" on novare_kv
+  for select using (auth.role() = 'authenticated');
 
-create policy "public write" on novare_kv
-  for insert with check (true);
+create policy "authenticated write" on novare_kv
+  for insert with check (auth.role() = 'authenticated');
 
-create policy "public update" on novare_kv
-  for update using (true);
+create policy "authenticated update" on novare_kv
+  for update using (auth.role() = 'authenticated');
