@@ -22,18 +22,18 @@ import {
 
 // ---- Design tokens ------------------------------------------------------
 const C = {
-  bg: "#12151B",
-  surface: "#1B2029",
-  surfaceAlt: "#232A35",
-  border: "#2C3440",
-  text: "#EDEEF2",
-  textMuted: "#8A93A3",
-  textFaint: "#5B6472",
-  gold: "#E8A33D",
-  goldDim: "#3A3323",
-  blue: "#4C86C9",
-  brick: "#B5563F",
-  green: "#4C9A72",
+  bg: "#FFFFFF",
+  surface: "#FAFAFA",
+  surfaceAlt: "#F1F2F4",
+  border: "#E2E4E8",
+  text: "#16171A",
+  textMuted: "#6B6F76",
+  textFaint: "#9A9DA3",
+  gold: "#3D63DD",
+  goldDim: "#E8EFFD",
+  blue: "#0D9488",
+  brick: "#A23F2E",
+  green: "#22815A",
 };
 
 const FONTS = (
@@ -43,8 +43,8 @@ const FONTS = (
     .nv-body { font-family: 'Inter', sans-serif; }
     .nv-mono { font-family: 'IBM Plex Mono', monospace; }
     .nv-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
-    .nv-scroll::-webkit-scrollbar-thumb { background: #2C3440; border-radius: 3px; }
-    input, select { color-scheme: dark; }
+    .nv-scroll::-webkit-scrollbar-thumb { background: #E2E4E8; border-radius: 3px; }
+    input, select { color-scheme: light; }
   `}</style>
 );
 
@@ -154,6 +154,9 @@ export default function App() {
   const [adminUser, setAdminUser] = useState(null);
   const [authResolving, setAuthResolving] = useState(true);
   const [loginError, setLoginError] = useState("");
+  // Which role the person claimed on the login screen (by which tab they
+  // picked) — checked against their account's real role once resolved.
+  const [expectedRole, setExpectedRole] = useState(null);
 
   // ---- auth: check for an existing session on load, and stay in sync ----
   useEffect(() => {
@@ -175,13 +178,23 @@ export default function App() {
       setRole("trainee");
       return;
     }
-    if (authUser.user_metadata?.role === "admin") {
+    const isAdminAccount = authUser.user_metadata?.role === "admin";
+
+    if (isAdminAccount) {
+      if (expectedRole === "trainee") {
+        setLoginError("This is an Admin account — switch to the Admin tab to log in.");
+        setExpectedRole(null);
+        auth.signOut();
+        return;
+      }
       setAdminUser(authUser);
       setRole("admin");
       setTab("dashboard");
       setLoginError("");
+      setExpectedRole(null);
       return;
     }
+
     // Not tagged as admin — look for a trainee record with a matching email.
     // Trainees may still be loading on first run; this effect re-runs once
     // the roster finishes loading, since `trainees` is a dependency below.
@@ -190,20 +203,29 @@ export default function App() {
       (t) => (t.email || "").trim().toLowerCase() === (authUser.email || "").trim().toLowerCase()
     );
     if (match) {
+      if (expectedRole === "admin") {
+        setLoginError("This is a Trainee account — switch to the Trainee tab to log in.");
+        setExpectedRole(null);
+        auth.signOut();
+        return;
+      }
       setAdminUser(null);
       setActiveTraineeId(match.id);
       setRole("trainee");
       setTab("dashboard");
       setLoginError("");
+      setExpectedRole(null);
     } else {
       setLoginError("This login isn't linked to an admin or trainee account. Contact your administrator.");
+      setExpectedRole(null);
       auth.signOut();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authUser, trainees, loading]);
 
-  const handleLogin = async (email, password) => {
+  const handleLogin = async (email, password, roleChoice) => {
     setLoginError("");
+    setExpectedRole(roleChoice);
     await auth.signIn(email, password);
     // authUser gets set via the onAuthStateChange subscription above.
   };
@@ -220,6 +242,7 @@ export default function App() {
         "This email isn't on the training roster yet. Ask your admin to add you in Roster first, then come back and sign up."
       );
     }
+    setExpectedRole("trainee");
     const { session } = await auth.signUp(email, password);
     if (!session) {
       throw new Error("CONFIRM_EMAIL");
@@ -800,10 +823,10 @@ export default function App() {
 function Stat({ label, value, accent }) {
   return (
     <div>
-      <div className="nv-display text-xl font-semibold" style={{ color: accent || "#EDEEF2" }}>
+      <div className="nv-display text-xl font-semibold" style={{ color: accent || "#16171A" }}>
         {value}
       </div>
-      <div className="text-xs" style={{ color: "#8A93A3" }}>
+      <div className="text-xs" style={{ color: "#6B6F76" }}>
         {label}
       </div>
     </div>
@@ -834,13 +857,30 @@ function SignedInAs({ role, adminUser, traineeName, onLogout }) {
 
 // ---- Login screen (shown before any authentication) ----
 function LoginScreen({ onLogin, onSignUp, externalError }) {
-  const [mode, setMode] = useState("login"); // "login" | "signup"
+  const [portal, setPortal] = useState(null); // null | "admin" | "trainee"
+  const [mode, setMode] = useState("login"); // "login" | "signup" — trainee only
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
+
+  const choosePortal = (p) => {
+    setPortal(p);
+    setMode("login");
+    setEmail("");
+    setPassword("");
+    setConfirmPassword("");
+    setError("");
+    setInfo("");
+  };
+
+  const goBack = () => {
+    setPortal(null);
+    setError("");
+    setInfo("");
+  };
 
   const switchMode = (m) => {
     setMode(m);
@@ -854,7 +894,7 @@ function LoginScreen({ onLogin, onSignUp, externalError }) {
     setBusy(true);
     try {
       if (mode === "login") {
-        await onLogin(email, password);
+        await onLogin(email, password, portal);
       } else {
         if (password !== confirmPassword) {
           setError("Passwords don't match.");
@@ -867,9 +907,6 @@ function LoginScreen({ onLogin, onSignUp, externalError }) {
           return;
         }
         await onSignUp(email, password);
-        // If we get here without an error, either the session started
-        // immediately (handled by the parent), or... see catch below for
-        // the "check your email" case.
       }
     } catch (e) {
       if (e.message === "CONFIRM_EMAIL") {
@@ -898,89 +935,135 @@ function LoginScreen({ onLogin, onSignUp, externalError }) {
         </div>
         <h1 className="nv-display text-xl font-semibold mb-6">Shift Sign-Off Tracker</h1>
 
-        <div className="flex gap-1 mb-5 text-sm rounded-md overflow-hidden" style={{ border: `1px solid ${C.border}` }}>
-          <button
-            onClick={() => switchMode("login")}
-            className="flex-1 py-1.5"
-            style={{ background: mode === "login" ? C.gold : "transparent", color: mode === "login" ? "#1B140A" : C.textMuted, fontWeight: 600 }}
-          >
-            Log in
-          </button>
-          <button
-            onClick={() => switchMode("signup")}
-            className="flex-1 py-1.5"
-            style={{ background: mode === "signup" ? C.gold : "transparent", color: mode === "signup" ? "#1B140A" : C.textMuted, fontWeight: 600 }}
-          >
-            Trainee sign up
-          </button>
-        </div>
+        {portal === null ? (
+          <div className="flex flex-col gap-3">
+            <div className="text-sm mb-1" style={{ color: C.textMuted }}>Who's logging in?</div>
+            <button
+              onClick={() => choosePortal("admin")}
+              className="rounded-md p-4 text-left flex items-center gap-3"
+              style={{ background: C.surfaceAlt, border: `1px solid ${C.border}` }}
+            >
+              <ShieldCheck size={20} style={{ color: C.gold }} />
+              <div>
+                <div className="font-semibold">Admin</div>
+                <div className="text-xs" style={{ color: C.textFaint }}>Manage roster, approvals, and imports</div>
+              </div>
+              <ChevronRight size={16} className="ml-auto" style={{ color: C.textFaint }} />
+            </button>
+            <button
+              onClick={() => choosePortal("trainee")}
+              className="rounded-md p-4 text-left flex items-center gap-3"
+              style={{ background: C.surfaceAlt, border: `1px solid ${C.border}` }}
+            >
+              <User size={20} style={{ color: C.gold }} />
+              <div>
+                <div className="font-semibold">Trainee</div>
+                <div className="text-xs" style={{ color: C.textFaint }}>Log shifts and see your progress</div>
+              </div>
+              <ChevronRight size={16} className="ml-auto" style={{ color: C.textFaint }} />
+            </button>
+            {externalError && (
+              <div className="text-sm flex items-center gap-2 mt-1" style={{ color: C.brick }}>
+                <AlertCircle size={14} /> {externalError}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <button onClick={goBack} className="text-xs flex items-center gap-1 self-start mb-1" style={{ color: C.textMuted }}>
+              ← Back
+            </button>
 
-        <div className="flex flex-col gap-3">
-          <label className="text-sm flex flex-col gap-1">
-            <span style={{ color: C.textMuted }}>Email</span>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && submit()}
-              style={selectStyle}
-              autoFocus
-            />
-          </label>
-          <label className="text-sm flex flex-col gap-1">
-            <span style={{ color: C.textMuted }}>Password</span>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && (mode === "login" ? submit() : null)}
-              style={selectStyle}
-            />
-          </label>
+            <div className="text-sm font-semibold flex items-center gap-1.5 mb-1">
+              {portal === "admin" ? <ShieldCheck size={14} style={{ color: C.gold }} /> : <User size={14} style={{ color: C.gold }} />}
+              {portal === "admin" ? "Admin login" : "Trainee"}
+            </div>
 
-          {mode === "signup" && (
+            {portal === "trainee" && (
+              <div className="flex gap-1 mb-2 text-sm rounded-md overflow-hidden" style={{ border: `1px solid ${C.border}` }}>
+                <button
+                  onClick={() => switchMode("login")}
+                  className="flex-1 py-1.5"
+                  style={{ background: mode === "login" ? C.gold : "transparent", color: mode === "login" ? "#FFFFFF" : C.textMuted, fontWeight: 600 }}
+                >
+                  Log in
+                </button>
+                <button
+                  onClick={() => switchMode("signup")}
+                  className="flex-1 py-1.5"
+                  style={{ background: mode === "signup" ? C.gold : "transparent", color: mode === "signup" ? "#FFFFFF" : C.textMuted, fontWeight: 600 }}
+                >
+                  Sign up
+                </button>
+              </div>
+            )}
+
             <label className="text-sm flex flex-col gap-1">
-              <span style={{ color: C.textMuted }}>Confirm password</span>
+              <span style={{ color: C.textMuted }}>Email</span>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && (mode === "login" ? submit() : null)}
+                style={selectStyle}
+                autoFocus
+              />
+            </label>
+            <label className="text-sm flex flex-col gap-1">
+              <span style={{ color: C.textMuted }}>Password</span>
               <input
                 type="password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && submit()}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && (mode === "login" ? submit() : null)}
                 style={selectStyle}
               />
             </label>
-          )}
 
-          <button
-            onClick={submit}
-            disabled={busy || !canSubmit}
-            className="mt-2 rounded-md py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
-            style={{
-              background: busy || !canSubmit ? C.border : C.gold,
-              color: busy || !canSubmit ? C.textFaint : "#1B140A",
-            }}
-          >
-            {busy ? "Working…" : mode === "login" ? "Log in" : "Create account"}
-            <ChevronRight size={16} />
-          </button>
+            {mode === "signup" && (
+              <label className="text-sm flex flex-col gap-1">
+                <span style={{ color: C.textMuted }}>Confirm password</span>
+                <input
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && submit()}
+                  style={selectStyle}
+                />
+              </label>
+            )}
 
-          {(error || externalError) && (
-            <div className="text-sm flex items-center gap-2" style={{ color: C.brick }}>
-              <AlertCircle size={14} /> {error || externalError}
-            </div>
-          )}
-          {info && (
-            <div className="text-sm flex items-center gap-2" style={{ color: C.green }}>
-              <Check size={14} /> {info}
-            </div>
-          )}
+            <button
+              onClick={submit}
+              disabled={busy || !canSubmit}
+              className="mt-2 rounded-md py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
+              style={{
+                background: busy || !canSubmit ? C.border : C.gold,
+                color: busy || !canSubmit ? C.textFaint : "#FFFFFF",
+              }}
+            >
+              {busy ? "Working…" : mode === "login" ? "Log in" : "Create account"}
+              <ChevronRight size={16} />
+            </button>
 
-          <div className="text-xs mt-2" style={{ color: C.textFaint }}>
-            {mode === "login"
-              ? "New trainee? Use the \"Trainee sign up\" tab above — your email needs to already be added in Roster by an admin."
-              : "Admin accounts are set up directly by an admin and can't be created here."}
+            {(error || externalError) && (
+              <div className="text-sm flex items-center gap-2" style={{ color: C.brick }}>
+                <AlertCircle size={14} /> {error || externalError}
+              </div>
+            )}
+            {info && (
+              <div className="text-sm flex items-center gap-2" style={{ color: C.green }}>
+                <Check size={14} /> {info}
+              </div>
+            )}
+
+            {portal === "trainee" && mode === "login" && (
+              <div className="text-xs mt-1" style={{ color: C.textFaint }}>
+                New trainee? Use the "Sign up" tab above — your email needs to already be added in Roster by an admin.
+              </div>
+            )}
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
@@ -1093,7 +1176,7 @@ function Dashboard({ trainees, venues, approvedFor, totalFor, totalRequired, isR
               <div className="flex items-center gap-2">
                 <span className="nv-display font-semibold">{t.name}</span>
                 {ready && (
-                  <span className="text-xs px-2 py-0.5 rounded-full flex items-center gap-1" style={{ background: "#1D3327", color: C.green }}>
+                  <span className="text-xs px-2 py-0.5 rounded-full flex items-center gap-1" style={{ background: "#E3F5EA", color: C.green }}>
                     <Check size={12} /> Ready to solo
                   </span>
                 )}
@@ -1198,7 +1281,7 @@ function StatusDot({ status }) {
 function Punch({ count }) {
   if (count >= SHIFTS_PER_VENUE) {
     return (
-      <div className="rounded-full flex items-center justify-center" style={{ width: 32, height: 32, background: C.gold, color: "#1B140A" }}>
+      <div className="rounded-full flex items-center justify-center" style={{ width: 32, height: 32, background: C.gold, color: "#FFFFFF" }}>
         <Check size={16} strokeWidth={3} />
       </div>
     );
@@ -1374,7 +1457,7 @@ function LogShift({ role, trainees, venues, managers, activeTraineeId, onSubmit 
             date, the shift is verified and approved automatically instead of waiting on an admin.
           </div>
           {!fileName ? (
-            <label className="text-xs px-3 py-1.5 rounded-md cursor-pointer inline-block" style={{ background: C.gold, color: "#1B140A", fontWeight: 600 }}>
+            <label className="text-xs px-3 py-1.5 rounded-md cursor-pointer inline-block" style={{ background: C.gold, color: "#FFFFFF", fontWeight: 600 }}>
               Choose CSV file
               <input type="file" accept=".csv" onChange={handleFile} className="hidden" />
             </label>
@@ -1383,7 +1466,7 @@ function LogShift({ role, trainees, venues, managers, activeTraineeId, onSubmit 
               <span style={{ color: C.textMuted }}>{fileName}</span>
               <button onClick={clearFile} style={{ color: C.textFaint }}><X size={13} /></button>
               {matchStatus === "matched" && (
-                <span className="flex items-center gap-1 px-2 py-0.5 rounded-full" style={{ background: "#1D3327", color: C.green }}>
+                <span className="flex items-center gap-1 px-2 py-0.5 rounded-full" style={{ background: "#E3F5EA", color: C.green }}>
                   <Check size={12} /> Matched
                 </span>
               )}
@@ -1407,7 +1490,7 @@ function LogShift({ role, trainees, venues, managers, activeTraineeId, onSubmit 
           className="mt-2 rounded-md py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
           style={{
             background: !traineeId || !venueId ? C.border : C.gold,
-            color: !traineeId || !venueId ? C.textFaint : "#1B140A",
+            color: !traineeId || !venueId ? C.textFaint : "#FFFFFF",
             cursor: !traineeId || !venueId ? "not-allowed" : "pointer",
           }}
         >
@@ -1472,7 +1555,7 @@ function Approvals({ pending, scheduled, traineeName, venueName, managerById, on
                     {s.note && <div className="text-xs italic mt-1" style={{ color: C.textFaint }}>“{s.note}”</div>}
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={() => onApprove(s.id)} className="px-3 py-1.5 rounded-md text-sm font-semibold flex items-center gap-1" style={{ background: C.green, color: "#0E1F16" }}>
+                    <button onClick={() => onApprove(s.id)} className="px-3 py-1.5 rounded-md text-sm font-semibold flex items-center gap-1" style={{ background: C.green, color: "#FFFFFF" }}>
                       <Check size={14} /> Approve
                     </button>
                     <button onClick={() => onReject(s.id)} className="px-3 py-1.5 rounded-md text-sm font-semibold flex items-center gap-1" style={{ background: "transparent", color: C.brick, border: `1px solid ${C.brick}` }}>
@@ -1512,7 +1595,7 @@ function Approvals({ pending, scheduled, traineeName, venueName, managerById, on
                   </div>
                   {isPast ? (
                     <div className="flex gap-2">
-                      <button onClick={() => onApprove(s.id)} className="px-2.5 py-1 rounded text-xs font-semibold" style={{ background: C.green, color: "#0E1F16" }}>
+                      <button onClick={() => onApprove(s.id)} className="px-2.5 py-1 rounded text-xs font-semibold" style={{ background: C.green, color: "#FFFFFF" }}>
                         Confirm completed
                       </button>
                       <button onClick={() => onReject(s.id)} className="px-2.5 py-1 rounded text-xs font-semibold" style={{ background: "transparent", color: C.brick, border: `1px solid ${C.brick}` }}>
@@ -1571,7 +1654,7 @@ function RosterManager({ trainees, venues, managers, totalFor, totalRequired, sh
           <span style={{ color: C.textMuted }}>Load sample trainees, venues, managers, and shifts.</span>
         </div>
         <div className="flex gap-2">
-          <button onClick={onSeedDemo} className="text-sm px-3 py-1.5 rounded-md font-semibold" style={{ background: C.gold, color: "#1B140A" }}>
+          <button onClick={onSeedDemo} className="text-sm px-3 py-1.5 rounded-md font-semibold" style={{ background: C.gold, color: "#FFFFFF" }}>
             Load demo data
           </button>
           {confirmingReset ? (
@@ -1600,7 +1683,7 @@ function RosterManager({ trainees, venues, managers, totalFor, totalRequired, sh
               style={{ ...selectStyle, flex: 1 }}
               onKeyDown={(e) => { if (e.key === "Enter" && name.trim() && traineeEmail.trim()) { onAddTrainee(name, traineeEmail); setName(""); setTraineeEmail(""); } }}
             />
-            <button onClick={() => { if (name.trim() && traineeEmail.trim()) { onAddTrainee(name, traineeEmail); setName(""); setTraineeEmail(""); } }} className="px-3 rounded-md flex items-center" style={{ background: C.gold, color: "#1B140A" }}>
+            <button onClick={() => { if (name.trim() && traineeEmail.trim()) { onAddTrainee(name, traineeEmail); setName(""); setTraineeEmail(""); } }} className="px-3 rounded-md flex items-center" style={{ background: C.gold, color: "#FFFFFF" }}>
               <Plus size={16} />
             </button>
           </div>
@@ -1674,7 +1757,7 @@ function RosterManager({ trainees, venues, managers, totalFor, totalRequired, sh
             <button
               onClick={() => { if (mgrName.trim()) { onAddManager(mgrName, mgrPhone, mgrEmail); setMgrName(""); setMgrPhone(""); setMgrEmail(""); } }}
               className="px-3 py-1.5 rounded-md text-sm font-semibold flex items-center justify-center gap-1"
-              style={{ background: C.gold, color: "#1B140A" }}
+              style={{ background: C.gold, color: "#FFFFFF" }}
             >
               <Plus size={14} /> Add manager
             </button>
@@ -1796,7 +1879,7 @@ function CompletedShiftsImport({ trainees, venues, managers, onImport }) {
         <div className="rounded-lg p-8 text-center flex flex-col items-center gap-3" style={{ background: C.surfaceAlt, border: `1px dashed ${C.border}` }}>
           <UploadCloud size={28} style={{ color: C.gold }} />
           <div className="nv-display font-semibold">Upload Nowsta CSV export</div>
-          <label className="text-sm px-4 py-2 rounded-md cursor-pointer" style={{ background: C.gold, color: "#1B140A", fontWeight: 600 }}>
+          <label className="text-sm px-4 py-2 rounded-md cursor-pointer" style={{ background: C.gold, color: "#FFFFFF", fontWeight: 600 }}>
             Choose file
             <input type="file" accept=".csv" onChange={handleFile} className="hidden" />
           </label>
@@ -1824,7 +1907,7 @@ function CompletedShiftsImport({ trainees, venues, managers, onImport }) {
               onClick={buildPreview}
               disabled={!mapping.name || !mapping.venue || !mapping.date}
               className="px-4 py-2 rounded-md text-sm font-semibold"
-              style={{ background: !mapping.name || !mapping.venue || !mapping.date ? C.border : C.gold, color: !mapping.name || !mapping.venue || !mapping.date ? C.textFaint : "#1B140A" }}
+              style={{ background: !mapping.name || !mapping.venue || !mapping.date ? C.border : C.gold, color: !mapping.name || !mapping.venue || !mapping.date ? C.textFaint : "#FFFFFF" }}
             >
               Preview matches
             </button>
@@ -1878,7 +1961,7 @@ function CompletedShiftsImport({ trainees, venues, managers, onImport }) {
               onClick={confirmImport}
               disabled={readyRows.length === 0}
               className="px-4 py-2 rounded-md text-sm font-semibold"
-              style={{ background: readyRows.length ? C.gold : C.border, color: readyRows.length ? "#1B140A" : C.textFaint }}
+              style={{ background: readyRows.length ? C.gold : C.border, color: readyRows.length ? "#FFFFFF" : C.textFaint }}
             >
               Import {readyRows.length} shift{readyRows.length === 1 ? "" : "s"}
             </button>
@@ -1897,7 +1980,7 @@ function CompletedShiftsImport({ trainees, venues, managers, onImport }) {
             {result.skippedDupes > 0 && ` ${result.skippedDupes} already existed and were skipped.`}
             {result.unresolved > 0 && ` ${result.unresolved} row(s) were left unmatched and not imported.`}
           </div>
-          <button onClick={reset} className="mt-2 text-sm px-4 py-2 rounded-md self-start" style={{ background: C.gold, color: "#1B140A", fontWeight: 600 }}>
+          <button onClick={reset} className="mt-2 text-sm px-4 py-2 rounded-md self-start" style={{ background: C.gold, color: "#FFFFFF", fontWeight: 600 }}>
             Import another file
           </button>
         </div>
@@ -1921,7 +2004,7 @@ function ImportCsv({ trainees, venues, managers, onImport, onImportScheduled, on
             key={m.id}
             onClick={() => setMode(m.id)}
             className="text-sm px-3 py-1.5 rounded-md font-semibold"
-            style={{ background: mode === m.id ? C.gold : "transparent", color: mode === m.id ? "#1B140A" : C.textMuted, border: `1px solid ${mode === m.id ? C.gold : C.border}` }}
+            style={{ background: mode === m.id ? C.gold : "transparent", color: mode === m.id ? "#FFFFFF" : C.textMuted, border: `1px solid ${mode === m.id ? C.gold : C.border}` }}
           >
             {m.label}
           </button>
@@ -2097,7 +2180,7 @@ function ScheduleImport({ trainees, venues, onImport, onImportEvents, eventVenue
             <span style={{ color: C.textMuted }}>Year covered by this file</span>
             <input value={year} onChange={(e) => setYear(e.target.value)} style={{ ...selectStyle, width: 80, padding: "5px 8px" }} />
           </div>
-          <label className="text-sm px-4 py-2 rounded-md cursor-pointer" style={{ background: C.gold, color: "#1B140A", fontWeight: 600 }}>
+          <label className="text-sm px-4 py-2 rounded-md cursor-pointer" style={{ background: C.gold, color: "#FFFFFF", fontWeight: 600 }}>
             Choose file
             <input type="file" accept=".csv" onChange={handleFile} className="hidden" />
           </label>
@@ -2137,7 +2220,7 @@ function ScheduleImport({ trainees, venues, onImport, onImportEvents, eventVenue
               onClick={confirmImport}
               disabled={!allLabelsMapped}
               className="px-4 py-2 rounded-md text-sm font-semibold"
-              style={{ background: allLabelsMapped ? C.gold : C.border, color: allLabelsMapped ? "#1B140A" : C.textFaint }}
+              style={{ background: allLabelsMapped ? C.gold : C.border, color: allLabelsMapped ? "#FFFFFF" : C.textFaint }}
             >
               Import {buildRows().length} upcoming shift{buildRows().length === 1 ? "" : "s"}
             </button>
@@ -2156,7 +2239,7 @@ function ScheduleImport({ trainees, venues, onImport, onImportEvents, eventVenue
             {result.removed > 0 && ` ${result.removed} shift${result.removed === 1 ? "" : "s"} no longer confirmed and removed.`}
             {" "}Also updated the Calendar tab with {result.eventCount} event{result.eventCount === 1 ? "" : "s"}.
           </div>
-          <button onClick={reset} className="mt-2 text-sm px-4 py-2 rounded-md self-start" style={{ background: C.gold, color: "#1B140A", fontWeight: 600 }}>
+          <button onClick={reset} className="mt-2 text-sm px-4 py-2 rounded-md self-start" style={{ background: C.gold, color: "#FFFFFF", fontWeight: 600 }}>
             Import another file
           </button>
         </div>
@@ -2334,7 +2417,7 @@ function EventOverviewImport({ trainees, venues, onImport, onImportEvents, event
         <div className="rounded-lg p-8 text-center flex flex-col items-center gap-3" style={{ background: C.surfaceAlt, border: `1px dashed ${C.border}` }}>
           <UploadCloud size={28} style={{ color: C.gold }} />
           <div className="nv-display font-semibold">Upload Event Overview export</div>
-          <label className="text-sm px-4 py-2 rounded-md cursor-pointer" style={{ background: C.gold, color: "#1B140A", fontWeight: 600 }}>
+          <label className="text-sm px-4 py-2 rounded-md cursor-pointer" style={{ background: C.gold, color: "#FFFFFF", fontWeight: 600 }}>
             Choose file
             <input type="file" accept=".csv" onChange={handleFile} className="hidden" />
           </label>
@@ -2374,7 +2457,7 @@ function EventOverviewImport({ trainees, venues, onImport, onImportEvents, event
               onClick={confirmImport}
               disabled={!allMapped}
               className="px-4 py-2 rounded-md text-sm font-semibold"
-              style={{ background: allMapped ? C.gold : C.border, color: allMapped ? "#1B140A" : C.textFaint }}
+              style={{ background: allMapped ? C.gold : C.border, color: allMapped ? "#FFFFFF" : C.textFaint }}
             >
               Import {buildRows().length} upcoming shift{buildRows().length === 1 ? "" : "s"}
             </button>
@@ -2393,7 +2476,7 @@ function EventOverviewImport({ trainees, venues, onImport, onImportEvents, event
             {result.removed > 0 && ` ${result.removed} shift${result.removed === 1 ? "" : "s"} no longer confirmed and removed.`}
             {" "}Also updated the Calendar tab with {result.eventCount} event{result.eventCount === 1 ? "" : "s"} across your venues.
           </div>
-          <button onClick={reset} className="mt-2 text-sm px-4 py-2 rounded-md self-start" style={{ background: C.gold, color: "#1B140A", fontWeight: 600 }}>
+          <button onClick={reset} className="mt-2 text-sm px-4 py-2 rounded-md self-start" style={{ background: C.gold, color: "#FFFFFF", fontWeight: 600 }}>
             Import another file
           </button>
         </div>
@@ -2438,14 +2521,14 @@ function CalendarView({ events, venues }) {
         <button
           onClick={() => setGroupBy("venue")}
           className="text-sm px-3 py-1.5 rounded-md font-semibold"
-          style={{ background: groupBy === "venue" ? C.gold : "transparent", color: groupBy === "venue" ? "#1B140A" : C.textMuted, border: `1px solid ${groupBy === "venue" ? C.gold : C.border}` }}
+          style={{ background: groupBy === "venue" ? C.gold : "transparent", color: groupBy === "venue" ? "#FFFFFF" : C.textMuted, border: `1px solid ${groupBy === "venue" ? C.gold : C.border}` }}
         >
           By venue
         </button>
         <button
           onClick={() => setGroupBy("date")}
           className="text-sm px-3 py-1.5 rounded-md font-semibold"
-          style={{ background: groupBy === "date" ? C.gold : "transparent", color: groupBy === "date" ? "#1B140A" : C.textMuted, border: `1px solid ${groupBy === "date" ? C.gold : C.border}` }}
+          style={{ background: groupBy === "date" ? C.gold : "transparent", color: groupBy === "date" ? "#FFFFFF" : C.textMuted, border: `1px solid ${groupBy === "date" ? C.gold : C.border}` }}
         >
           By date
         </button>
