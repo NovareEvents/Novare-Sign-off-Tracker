@@ -144,6 +144,7 @@ export default function App() {
   const [role, setRole] = useState("trainee");
   const [activeTraineeId, setActiveTraineeId] = useState("");
   const [tab, setTab] = useState("dashboard");
+  const [previewTraineeId, setPreviewTraineeId] = useState("");
   const [eventVenueMap, setEventVenueMap] = useState({});
   const [calendarEvents, setCalendarEvents] = useState([]);
 
@@ -731,30 +732,71 @@ export default function App() {
 
       {/* Content */}
       <div className="p-6" style={{ background: C.surface }}>
-        {tab === "dashboard" && (
-          <Dashboard
-            trainees={trainees}
-            venues={venues}
-            approvedFor={approvedFor}
-            totalFor={totalFor}
-            totalRequired={totalRequired}
-            isReady={isReady}
-            recentActivity={recentActivity}
-            scheduled={scheduled}
-            traineeName={traineeName}
-            venueName={venueName}
-            managerById={managerById}
-            approvedShiftsForTrainee={approvedShiftsForTrainee}
-            scheduledShiftsForTrainee={scheduledShiftsForTrainee}
-          />
-        )}
+        {previewTraineeId ? (
+          <div className="flex flex-col gap-4">
+            <div
+              className="rounded-lg p-3 flex items-center justify-between gap-3 flex-wrap"
+              style={{ background: C.goldDim, border: `1px solid ${C.gold}` }}
+            >
+              <span className="text-sm" style={{ color: C.gold }}>
+                Viewing as {traineeName(previewTraineeId)} — read-only, nothing here is saved as real activity.
+              </span>
+              <button
+                onClick={() => setPreviewTraineeId("")}
+                className="text-xs px-3 py-1.5 rounded-md font-semibold"
+                style={{ background: C.gold, color: "#FFFFFF" }}
+              >
+                Exit preview
+              </button>
+            </div>
+            <Dashboard
+              trainees={trainees.filter((t) => t.id === previewTraineeId)}
+              venues={venues}
+              approvedFor={approvedFor}
+              totalFor={totalFor}
+              totalRequired={totalRequired}
+              isReady={isReady}
+              recentActivity={[]}
+              scheduled={[]}
+              traineeName={traineeName}
+              venueName={venueName}
+              managerById={managerById}
+              approvedShiftsForTrainee={approvedShiftsForTrainee}
+              scheduledShiftsForTrainee={scheduledShiftsForTrainee}
+            />
+            <div>
+              <div className="text-sm font-semibold mb-3" style={{ color: C.text }}>Their calendar</div>
+              <MyCalendar events={calendarEvents} venues={venues} traineeId={previewTraineeId} />
+            </div>
+          </div>
+        ) : (
+          <>
+            {tab === "dashboard" && (
+              <Dashboard
+                trainees={trainees}
+                venues={venues}
+                approvedFor={approvedFor}
+                totalFor={totalFor}
+                totalRequired={totalRequired}
+                isReady={isReady}
+                recentActivity={recentActivity}
+                scheduled={scheduled}
+                traineeName={traineeName}
+                venueName={venueName}
+                managerById={managerById}
+                approvedShiftsForTrainee={approvedShiftsForTrainee}
+                scheduledShiftsForTrainee={scheduledShiftsForTrainee}
+                showPreviewButton={role === "admin"}
+                onPreviewAsTrainee={(id) => setPreviewTraineeId(id)}
+              />
+            )}
 
-        {tab === "my-calendar" && role === "trainee" && activeTraineeId && (
-          <MyCalendar events={calendarEvents} venues={venues} traineeId={activeTraineeId} />
-        )}
+            {tab === "my-calendar" && role === "trainee" && activeTraineeId && (
+              <MyCalendar events={calendarEvents} venues={venues} traineeId={activeTraineeId} />
+            )}
 
-        {tab === "log" && (
-          <LogShift
+            {tab === "log" && (
+              <LogShift
             role={role}
             trainees={trainees}
             venues={venues}
@@ -813,6 +855,8 @@ export default function App() {
             onSeedDemo={seedDemoData}
             onResetAll={resetAllData}
           />
+        )}
+          </>
         )}
       </div>
     </div>
@@ -1070,7 +1114,7 @@ function LoginScreen({ onLogin, onSignUp, externalError }) {
 }
 
 // ---- Punch-card dashboard ----
-function Dashboard({ trainees, venues, approvedFor, totalFor, totalRequired, isReady, recentActivity, scheduled, traineeName, venueName, managerById, approvedShiftsForTrainee, scheduledShiftsForTrainee }) {
+function Dashboard({ trainees, venues, approvedFor, totalFor, totalRequired, isReady, recentActivity, scheduled, traineeName, venueName, managerById, approvedShiftsForTrainee, scheduledShiftsForTrainee, showPreviewButton, onPreviewAsTrainee }) {
   const [selectedTraineeId, setSelectedTraineeId] = useState("");
 
   if (trainees.length === 0) {
@@ -1094,6 +1138,15 @@ function Dashboard({ trainees, venues, approvedFor, totalFor, totalRequired, isR
         <div className="flex items-center gap-2 flex-wrap">
           <span className="nv-display text-xl font-semibold">{t ? t.name : "Trainee"}</span>
           <span className="nv-mono text-sm" style={{ color: C.textMuted }}>{total}/{totalRequired} shifts completed</span>
+          {showPreviewButton && (
+            <button
+              onClick={() => onPreviewAsTrainee(selectedTraineeId)}
+              className="text-xs px-2.5 py-1 rounded-md ml-auto"
+              style={{ color: C.gold, border: `1px solid ${C.gold}` }}
+            >
+              View as this trainee
+            </button>
+          )}
         </div>
 
         <div>
@@ -1127,27 +1180,49 @@ function Dashboard({ trainees, venues, approvedFor, totalFor, totalRequired, isR
           {history.length === 0 ? (
             <EmptyState title="No completed shifts yet" body="Once shifts are approved, they'll show up here with venue and details." />
           ) : (
-            <div className="flex flex-col gap-2">
-              {history.map((s) => {
-                const mgr = managerById(s.managerId);
+            <div className="flex flex-col gap-4">
+              {venues.map((v) => {
+                const venueShifts = history.filter((s) => s.venueId === v.id);
+                const count = venueShifts.length;
+                const complete = count >= SHIFTS_PER_VENUE;
                 return (
-                  <div key={s.id} className="rounded-lg p-4" style={{ background: C.surfaceAlt, border: `1px solid ${C.border}` }}>
-                    <div className="flex items-center gap-2 flex-wrap text-sm">
-                      <MapPin size={14} style={{ color: C.textMuted }} />
-                      <span className="font-semibold">{venueName(s.venueId)}</span>
-                      <span style={{ color: C.textFaint }}>·</span>
-                      <span className="nv-mono text-xs" style={{ color: C.textMuted }}>{s.date}</span>
-                      {s.nowstaVerified && (
-                        <span title="Matched a Nowsta timesheet record" style={{ color: C.green }}>
-                          <BadgeCheck size={14} />
-                        </span>
-                      )}
+                  <div key={v.id}>
+                    <div className="flex items-center gap-2 mb-2">
+                      <MapPin size={13} style={{ color: C.textMuted }} />
+                      <span className="text-sm font-semibold" style={{ color: C.text }}>{v.name}</span>
+                      <span
+                        className="nv-mono text-xs px-1.5 py-0.5 rounded"
+                        style={{ background: complete ? C.goldDim : C.surfaceAlt, color: complete ? C.gold : C.textFaint }}
+                      >
+                        {count}/{SHIFTS_PER_VENUE}
+                      </span>
                     </div>
-                    {mgr && (
-                      <div className="text-xs mt-1" style={{ color: C.textMuted }}>Worked with {mgr.name}</div>
-                    )}
-                    {s.note && (
-                      <div className="text-xs italic mt-1" style={{ color: C.textFaint }}>“{s.note}”</div>
+                    {venueShifts.length === 0 ? (
+                      <div className="text-xs mb-1" style={{ color: C.textFaint }}>No completed shifts here yet.</div>
+                    ) : (
+                      <div className="flex flex-col gap-2">
+                        {venueShifts.map((s) => {
+                          const mgr = managerById(s.managerId);
+                          return (
+                            <div key={s.id} className="rounded-lg p-3" style={{ background: C.surfaceAlt, border: `1px solid ${C.border}` }}>
+                              <div className="flex items-center gap-2 flex-wrap text-sm">
+                                <span className="nv-mono text-xs" style={{ color: C.textMuted }}>{s.date}</span>
+                                {s.nowstaVerified && (
+                                  <span title="Matched a Nowsta timesheet record" style={{ color: C.green }}>
+                                    <BadgeCheck size={14} />
+                                  </span>
+                                )}
+                              </div>
+                              {mgr && (
+                                <div className="text-xs mt-1" style={{ color: C.textMuted }}>Worked with {mgr.name}</div>
+                              )}
+                              {s.note && (
+                                <div className="text-xs italic mt-1" style={{ color: C.textFaint }}>“{s.note}”</div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     )}
                   </div>
                 );
