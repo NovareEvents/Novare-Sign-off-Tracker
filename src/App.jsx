@@ -685,11 +685,23 @@ export default function App() {
         </div>
 
         <div className="flex gap-6 mt-5 flex-wrap">
-          <Stat label="Trainees" value={trainees.length} />
-          <Stat label="Ready to solo" value={readyCount} accent={C.green} />
-          <Stat label="Pending approvals" value={pending.length} accent={pending.length ? C.gold : undefined} />
-          <Stat label="Upcoming" value={scheduled.length} accent={scheduled.length ? C.blue : undefined} />
-          <Stat label="Avg. completion" value={`${avgPct}%`} />
+          {role === "admin" ? (
+            <>
+              <Stat label="Trainees" value={trainees.length} />
+              <Stat label="Ready to solo" value={readyCount} accent={C.green} />
+              <Stat label="Pending approvals" value={pending.length} accent={pending.length ? C.gold : undefined} />
+              <Stat label="Upcoming" value={scheduled.length} accent={scheduled.length ? C.blue : undefined} />
+              <Stat label="Avg. completion" value={`${avgPct}%`} />
+            </>
+          ) : (
+            activeTraineeId && (
+              <Stat
+                label="Your progress"
+                value={`${totalFor(activeTraineeId)}/${totalRequired}`}
+                accent={isReady(activeTraineeId) ? C.green : undefined}
+              />
+            )
+          )}
         </div>
 
         {saveError && (
@@ -787,6 +799,7 @@ export default function App() {
                 approvedShiftsForTrainee={approvedShiftsForTrainee}
                 scheduledShiftsForTrainee={scheduledShiftsForTrainee}
                 showPreviewButton={role === "admin"}
+                restrictToTraineeId={role === "trainee" ? activeTraineeId : ""}
                 onPreviewAsTrainee={(id) => setPreviewTraineeId(id)}
               />
             )}
@@ -1114,33 +1127,36 @@ function LoginScreen({ onLogin, onSignUp, externalError }) {
 }
 
 // ---- Punch-card dashboard ----
-function Dashboard({ trainees, venues, approvedFor, totalFor, totalRequired, isReady, recentActivity, scheduled, traineeName, venueName, managerById, approvedShiftsForTrainee, scheduledShiftsForTrainee, showPreviewButton, onPreviewAsTrainee }) {
+function Dashboard({ trainees, venues, approvedFor, totalFor, totalRequired, isReady, recentActivity, scheduled, traineeName, venueName, managerById, approvedShiftsForTrainee, scheduledShiftsForTrainee, showPreviewButton, onPreviewAsTrainee, restrictToTraineeId }) {
   const [selectedTraineeId, setSelectedTraineeId] = useState("");
+  const effectiveId = restrictToTraineeId || selectedTraineeId;
 
   if (trainees.length === 0) {
     return <EmptyState title="No trainees yet" body="Add your first trainee from the Roster tab to start tracking shifts." />;
   }
 
-  if (selectedTraineeId) {
-    const t = trainees.find((tr) => tr.id === selectedTraineeId);
-    const history = approvedShiftsForTrainee ? approvedShiftsForTrainee(selectedTraineeId) : [];
-    const upcoming = scheduledShiftsForTrainee ? scheduledShiftsForTrainee(selectedTraineeId) : [];
-    const total = totalFor(selectedTraineeId);
+  if (effectiveId) {
+    const t = trainees.find((tr) => tr.id === effectiveId);
+    const history = approvedShiftsForTrainee ? approvedShiftsForTrainee(effectiveId) : [];
+    const upcoming = scheduledShiftsForTrainee ? scheduledShiftsForTrainee(effectiveId) : [];
+    const total = totalFor(effectiveId);
     return (
       <div className="flex flex-col gap-6">
-        <button
-          onClick={() => setSelectedTraineeId("")}
-          className="text-sm flex items-center gap-1 self-start"
-          style={{ color: C.gold }}
-        >
-          ← Back to all trainees
-        </button>
+        {!restrictToTraineeId && (
+          <button
+            onClick={() => setSelectedTraineeId("")}
+            className="text-sm flex items-center gap-1 self-start"
+            style={{ color: C.gold }}
+          >
+            ← Back to all trainees
+          </button>
+        )}
         <div className="flex items-center gap-2 flex-wrap">
           <span className="nv-display text-xl font-semibold">{t ? t.name : "Trainee"}</span>
           <span className="nv-mono text-sm" style={{ color: C.textMuted }}>{total}/{totalRequired} shifts completed</span>
-          {showPreviewButton && (
+          {showPreviewButton && !restrictToTraineeId && (
             <button
-              onClick={() => onPreviewAsTrainee(selectedTraineeId)}
+              onClick={() => onPreviewAsTrainee(effectiveId)}
               className="text-xs px-2.5 py-1 rounded-md ml-auto"
               style={{ color: C.gold, border: `1px solid ${C.gold}` }}
             >
