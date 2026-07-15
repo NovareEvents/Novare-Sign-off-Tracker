@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import Papa from "papaparse";
 import { storage, auth } from "./lib/db";
+import { useNavigate, useLocation } from "react-router-dom";
 import {
   Check,
   Clock,
@@ -18,6 +19,7 @@ import {
   Mail,
   Phone,
   BadgeCheck,
+  Menu,
 } from "lucide-react";
 
 // ---- Design tokens ------------------------------------------------------
@@ -143,8 +145,14 @@ export default function App() {
 
   const [role, setRole] = useState("trainee");
   const [activeTraineeId, setActiveTraineeId] = useState("");
-  const [tab, setTab] = useState("dashboard");
+  const navigate = useNavigate();
+  const location = useLocation();
+  const VALID_TABS = ["dashboard", "log", "my-calendar", "approvals", "calendar", "import", "roster"];
+  const pathTab = location.pathname.replace(/^\//, "");
+  const tab = VALID_TABS.includes(pathTab) ? pathTab : "dashboard";
+  const setTab = (t) => navigate("/" + t);
   const [previewTraineeId, setPreviewTraineeId] = useState("");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [eventVenueMap, setEventVenueMap] = useState({});
   const [calendarEvents, setCalendarEvents] = useState([]);
 
@@ -712,8 +720,8 @@ export default function App() {
       </div>
 
       {/* Tabs */}
-      <div className="px-6 pt-4 flex gap-1 flex-wrap">
-        {[
+      {(() => {
+        const tabItems = [
           { id: "dashboard", label: "Dashboard" },
           { id: "log", label: "Log a shift" },
           ...(role === "trainee" && activeTraineeId ? [{ id: "my-calendar", label: "My Calendar" }] : []),
@@ -725,22 +733,64 @@ export default function App() {
                 { id: "roster", label: "Roster" },
               ]
             : []),
-        ].map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className="px-3.5 py-2 text-sm rounded-t transition-colors"
-            style={{
-              background: tab === t.id ? C.surface : "transparent",
-              color: tab === t.id ? C.text : C.textMuted,
-              borderBottom: tab === t.id ? `2px solid ${C.gold}` : "2px solid transparent",
-              fontWeight: tab === t.id ? 600 : 500,
-            }}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+        ];
+        return (
+          <>
+            {/* Desktop tab row */}
+            <div className="px-6 pt-4 gap-1 flex-wrap hidden sm:flex">
+              {tabItems.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setTab(t.id)}
+                  className="px-3.5 py-2 text-sm rounded-t transition-colors"
+                  style={{
+                    background: tab === t.id ? C.surface : "transparent",
+                    color: tab === t.id ? C.text : C.textMuted,
+                    borderBottom: tab === t.id ? `2px solid ${C.gold}` : "2px solid transparent",
+                    fontWeight: tab === t.id ? 600 : 500,
+                  }}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Mobile menu */}
+            <div className="px-6 pt-4 sm:hidden">
+              <button
+                onClick={() => setMobileMenuOpen((v) => !v)}
+                className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-md text-sm font-semibold"
+                style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, color: C.text }}
+              >
+                <span className="flex items-center gap-2">
+                  <Menu size={16} />
+                  {tabItems.find((t) => t.id === tab)?.label || "Menu"}
+                </span>
+                {mobileMenuOpen ? <X size={16} /> : <ChevronRight size={16} style={{ transform: "rotate(90deg)" }} />}
+              </button>
+              {mobileMenuOpen && (
+                <div className="mt-1 rounded-md overflow-hidden" style={{ border: `1px solid ${C.border}` }}>
+                  {tabItems.map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => { setTab(t.id); setMobileMenuOpen(false); }}
+                      className="w-full text-left px-3.5 py-2.5 text-sm"
+                      style={{
+                        background: tab === t.id ? C.surfaceAlt : C.surface,
+                        color: tab === t.id ? C.text : C.textMuted,
+                        fontWeight: tab === t.id ? 600 : 500,
+                        borderBottom: `1px solid ${C.border}`,
+                      }}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        );
+      })()}
 
       {/* Content */}
       <div className="p-6" style={{ background: C.surface }}>
